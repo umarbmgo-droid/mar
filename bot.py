@@ -12,7 +12,7 @@ TOKEN = os.environ.get('TOKEN')
 OWNER_ID = 253335267618848778
 START_TIME = time.time()
 AFK_MAX_SECONDS = 40  # Maximum seconds for AFK check
-AFK_COOLDOWN = 0.5    # Time between countdown messages (0.4s = faster)
+AFK_COOLDOWN = 0.1    # Time between countdown messages (0.4s = faster)
 
 # ===== BOT SETUP =====
 intents = discord.Intents.all()
