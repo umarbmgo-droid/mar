@@ -11,8 +11,6 @@ from typing import Optional, List
 TOKEN = os.environ.get('TOKEN')
 OWNER_ID = 253335267618848778
 START_TIME = time.time()
-AFK_MAX_SECONDS = 40
-AFK_MESSAGE_DELAY = 0.3  # 3.3 messages per second - SAFE (no rate limits)
 
 # ===== BOT SETUP =====
 intents = discord.Intents.all()
@@ -21,7 +19,6 @@ bot = commands.Bot(command_prefix=None, intents=intents, help_command=None)
 # ===== DATA STORAGE =====
 auto_react = {}
 admins = []
-active_afk_checks = {}
 
 def load_data():
     global auto_react, admins
@@ -62,6 +59,7 @@ def get_uptime():
     return " ".join(parts)
 
 async def resolve_emoji(emoji_input, guild):
+    """Resolve custom emojis from any server"""
     if emoji_input.startswith('<') and emoji_input.endswith('>'):
         animated = emoji_input.startswith('<a:')
         parts = emoji_input.split(':')
@@ -74,14 +72,23 @@ async def resolve_emoji(emoji_input, guild):
             return emoji_input
     return emoji_input
 
-async def mass_react(message, emojis):
+# ===== INSTANT BURST REACTION SYSTEM =====
+async def burst_react(message, emojis):
+    """React with ALL emojis INSTANTLY at the same time"""
+    # Fire ALL reactions simultaneously (BURST MODE)
+    tasks = []
     for emoji in emojis:
         try:
             resolved = await resolve_emoji(emoji, message.guild)
-            await message.add_reaction(resolved)
+            tasks.append(message.add_reaction(resolved))
         except:
             pass
+    
+    # Execute ALL tasks at once - INSTANT
+    if tasks:
+        await asyncio.gather(*tasks)
 
+# ===== STATUS LOOP =====
 async def status_loop():
     await bot.wait_until_ready()
     while not bot.is_closed():
@@ -113,10 +120,11 @@ async def on_message(message):
     if message.author.bot:
         return
     
+    # INSTANT BURST AUTO-REACT - ALL EMOJIS AT ONCE
     if str(message.author.id) in auto_react:
         data = auto_react[str(message.author.id)]
         if data.get('emojis'):
-            await mass_react(message, data['emojis'])
+            await burst_react(message, data['emojis'])
     
     await bot.process_commands(message)
 
@@ -212,61 +220,6 @@ async def react_list(interaction: discord.Interaction):
     embed = discord.Embed(description=desc, color=0x000000)
     await interaction.response.send_message(embed=embed)
 
-# ===== AFK CHECK COMMAND (NO RATE LIMITS) =====
-afk_group = app_commands.Group(name="afk", description="AFK check system")
-
-@afk_group.command(name="check", description="Countdown AFK check on a user")
-@app_commands.describe(amount="Number of seconds to countdown (max 40)", user="User to check")
-async def afk_check(interaction: discord.Interaction, amount: int, user: discord.Member):
-    if amount < 1 or amount > AFK_MAX_SECONDS:
-        embed = discord.Embed(description=f"Amount must be between 1 and {AFK_MAX_SECONDS}", color=0x000000)
-        return await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    channel = interaction.channel
-    channel_id = channel.id
-    
-    if channel_id in active_afk_checks:
-        embed = discord.Embed(description="AFK check already running in this channel", color=0x000000)
-        return await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    active_afk_checks[channel_id] = True
-    
-    try:
-        await interaction.response.send_message(f"AFK check started for {user.mention} ({amount}s)")
-        
-        responded = False
-        
-        for i in range(amount, -1, -1):
-            if responded:
-                break
-            
-            if i == amount:
-                await channel.send(f"AFK CHECK {user.mention}")
-            elif i > 0:
-                await channel.send(f"{i} {user.mention}")
-            else:
-                await channel.send(f"0 {user.mention}")
-            
-            def check(m):
-                return m.author == user and m.content.lower() == "here" and m.channel == channel
-            
-            try:
-                await bot.wait_for('message', timeout=AFK_MESSAGE_DELAY, check=check)
-                responded = True
-                embed = discord.Embed(description=f"{user.mention} responded with 'here'", color=0x000000)
-                await channel.send(embed=embed)
-                break
-            except asyncio.TimeoutError:
-                continue
-        
-        if not responded:
-            embed = discord.Embed(description=f"{user.mention} folded", color=0x000000)
-            await channel.send(embed=embed)
-    
-    finally:
-        if channel_id in active_afk_checks:
-            del active_afk_checks[channel_id]
-
 # ===== BASIC COMMANDS =====
 @bot.tree.command(name="ping", description="Check bot latency")
 async def ping(interaction: discord.Interaction):
@@ -284,14 +237,13 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(name="Basic", value="`/ping` - Check latency\n`/uptime` - Show uptime\n`/help` - This menu", inline=False)
     embed.add_field(name="Admin (Owner Only)", value="`/admin add @user` - Add admin\n`/admin remove @user` - Remove admin\n`/admin list` - List admins", inline=False)
     embed.add_field(name="Auto-React (Owner/Admin)", value="`/react add @user 😈 👍 ❤️` - Add auto-reacts (up to 4)\n`/react remove @user` - Remove auto-reacts\n`/react list` - List auto-reacted users", inline=False)
-    embed.add_field(name="AFK Check", value=f"`/afk check <amount> <user>` - AFK countdown check (max {AFK_MAX_SECONDS}s)", inline=False)
+    embed.add_field(name="Features", value="• INSTANT BURST REACTIONS - all emojis react at the same time\n• No delays\n• No rate limits", inline=False)
     embed.set_footer(text="Streaming Umar")
     await interaction.response.send_message(embed=embed)
 
 # ===== REGISTER GROUPS =====
 bot.tree.add_command(admin_group)
 bot.tree.add_command(react_group)
-bot.tree.add_command(afk_group)
 
 # ===== RUN BOT =====
 if __name__ == "__main__":
