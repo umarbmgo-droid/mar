@@ -11,8 +11,8 @@ from typing import Optional, List
 TOKEN = os.environ.get('TOKEN')
 OWNER_ID = 253335267618848778
 START_TIME = time.time()
-AFK_MAX_SECONDS = 40  # Maximum seconds for AFK check
-AFK_BURST_SPEED = 0.05  # 0.05 seconds between messages - INSANE SPEED
+AFK_MAX_SECONDS = 40
+AFK_MESSAGE_DELAY = 0.3  # 3.3 messages per second - SAFE (no rate limits)
 
 # ===== BOT SETUP =====
 intents = discord.Intents.all()
@@ -212,37 +212,34 @@ async def react_list(interaction: discord.Interaction):
     embed = discord.Embed(description=desc, color=0x000000)
     await interaction.response.send_message(embed=embed)
 
-# ===== AFK CHECK - BURST MODE (INSANELY FAST) =====
+# ===== AFK CHECK COMMAND (NO RATE LIMITS) =====
 afk_group = app_commands.Group(name="afk", description="AFK check system")
 
-@afk_group.command(name="check", description="BURST AFK check on a user - INSANELY FAST")
+@afk_group.command(name="check", description="Countdown AFK check on a user")
 @app_commands.describe(amount="Number of seconds to countdown (max 40)", user="User to check")
 async def afk_check(interaction: discord.Interaction, amount: int, user: discord.Member):
     if amount < 1 or amount > AFK_MAX_SECONDS:
-        embed = discord.Embed(description=f"Amount must be between 1 and {AFK_MAX_SECONDS} seconds", color=0x000000)
+        embed = discord.Embed(description=f"Amount must be between 1 and {AFK_MAX_SECONDS}", color=0x000000)
         return await interaction.response.send_message(embed=embed, ephemeral=True)
     
     channel = interaction.channel
     channel_id = channel.id
     
     if channel_id in active_afk_checks:
-        embed = discord.Embed(description="⏳ AFK check already running", color=0x000000)
+        embed = discord.Embed(description="AFK check already running in this channel", color=0x000000)
         return await interaction.response.send_message(embed=embed, ephemeral=True)
     
     active_afk_checks[channel_id] = True
     
     try:
-        await interaction.response.send_message(f"BURST AFK check for {user.mention} - {amount}s")
+        await interaction.response.send_message(f"AFK check started for {user.mention} ({amount}s)")
         
         responded = False
-        total_messages = amount + 1  # +1 for 0
         
-        # BURST MODE - Send all messages as fast as Discord allows
         for i in range(amount, -1, -1):
             if responded:
                 break
             
-            # Send countdown message
             if i == amount:
                 await channel.send(f"AFK CHECK {user.mention}")
             elif i > 0:
@@ -250,22 +247,20 @@ async def afk_check(interaction: discord.Interaction, amount: int, user: discord
             else:
                 await channel.send(f"0 {user.mention}")
             
-            # Check if user responded INSTANTLY
             def check(m):
                 return m.author == user and m.content.lower() == "here" and m.channel == channel
             
             try:
-                # ULTRA FAST response check
-                await bot.wait_for('message', timeout=AFK_BURST_SPEED, check=check)
+                await bot.wait_for('message', timeout=AFK_MESSAGE_DELAY, check=check)
                 responded = True
-                embed = discord.Embed(description=f"✅ {user.mention} responded instantly!", color=0x000000)
+                embed = discord.Embed(description=f"{user.mention} responded with 'here'", color=0x000000)
                 await channel.send(embed=embed)
                 break
             except asyncio.TimeoutError:
                 continue
         
         if not responded:
-            embed = discord.Embed(description=f"❌ {user.mention} folded", color=0x000000)
+            embed = discord.Embed(description=f"{user.mention} folded", color=0x000000)
             await channel.send(embed=embed)
     
     finally:
@@ -289,8 +284,8 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(name="Basic", value="`/ping` - Check latency\n`/uptime` - Show uptime\n`/help` - This menu", inline=False)
     embed.add_field(name="Admin (Owner Only)", value="`/admin add @user` - Add admin\n`/admin remove @user` - Remove admin\n`/admin list` - List admins", inline=False)
     embed.add_field(name="Auto-React (Owner/Admin)", value="`/react add @user 😈 👍 ❤️` - Add auto-reacts (up to 4)\n`/react remove @user` - Remove auto-reacts\n`/react list` - List auto-reacted users", inline=False)
-    embed.add_field(name="AFK BURST CHECK", value=f"`/afk check <amount> <user>` - BURST AFK check\n• {AFK_BURST_SPEED}s between messages - INSANE SPEED\n• User must reply `here` within {AFK_BURST_SPEED}s\n• Max {AFK_MAX_SECONDS}s", inline=False)
-    embed.set_footer(text="Streaming Umar | BURST MODE ACTIVE")
+    embed.add_field(name="AFK Check", value=f"`/afk check <amount> <user>` - AFK countdown check (max {AFK_MAX_SECONDS}s)", inline=False)
+    embed.set_footer(text="Streaming Umar")
     await interaction.response.send_message(embed=embed)
 
 # ===== REGISTER GROUPS =====
@@ -304,5 +299,5 @@ if __name__ == "__main__":
         print("❌ ERROR: No token found!")
         exit(1)
     
-    print("Starting MAR - BURST MODE...")
+    print("Starting MAR...")
     bot.run(TOKEN)
