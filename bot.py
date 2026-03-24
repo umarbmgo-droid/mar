@@ -11,6 +11,8 @@ from typing import Optional, List
 TOKEN = os.environ.get('TOKEN')
 OWNER_ID = 253335267618848778
 START_TIME = time.time()
+AFK_MAX_SECONDS = 40  # Maximum seconds for AFK check
+AFK_COOLDOWN = 0.3    # Time between countdown messages (0.4s = faster)
 
 # ===== BOT SETUP =====
 intents = discord.Intents.all()
@@ -19,6 +21,7 @@ bot = commands.Bot(command_prefix=None, intents=intents, help_command=None)
 # ===== DATA STORAGE =====
 auto_react = {}
 admins = []
+active_afk_checks = {}  # {channel_id: True} to prevent multiple checks
 
 def load_data():
     global auto_react, admins
@@ -214,44 +217,72 @@ async def react_list(interaction: discord.Interaction):
     embed = discord.Embed(description=desc, color=0x000000)
     await interaction.response.send_message(embed=embed)
 
-# ===== AFK CHECK COMMAND =====
+# ===== AFK CHECK COMMAND (UPDATED) =====
 afk_group = app_commands.Group(name="afk", description="AFK check system")
 
 @afk_group.command(name="check", description="Countdown AFK check on a user")
-@app_commands.describe(amount="Number of seconds to countdown", user="User to check")
+@app_commands.describe(amount="Number of seconds to countdown (max 40)", user="User to check")
 async def afk_check(interaction: discord.Interaction, amount: int, user: discord.Member):
-    if amount < 1 or amount > 60:
-        embed = discord.Embed(description="Amount must be between 1 and 60", color=0x000000)
+    # Validate amount
+    if amount < 1 or amount > AFK_MAX_SECONDS:
+        embed = discord.Embed(description=f"Amount must be between 1 and {AFK_MAX_SECONDS} seconds", color=0x000000)
         return await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    await interaction.response.send_message(f"AFK check started for {user.mention} for {amount} seconds")
-    
     channel = interaction.channel
+    channel_id = channel.id
     
-    # Send countdown messages
-    for i in range(amount, -1, -1):
-        if i == amount:
-            msg = await channel.send(f"AFK CHECK {user.mention}")
-        elif i > 0:
-            msg = await channel.send(f"{i} {user.mention}")
-        else:
-            msg = await channel.send(f"0 {user.mention}")
+    # Check if there's already an active AFK check in this channel
+    if channel_id in active_afk_checks:
+        embed = discord.Embed(description="⏳ An AFK check is already running in this channel. Wait for it to finish.", color=0x000000)
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    # Mark channel as busy
+    active_afk_checks[channel_id] = True
+    
+    try:
+        # Send initial message
+        await interaction.response.send_message(f"AFK check started for {user.mention} for {amount} seconds")
         
-        # Wait for user to reply "here"
-        def check(m):
-            return m.author == user and m.content.lower() == "here" and m.channel == channel
+        # Variables to track if user responded
+        responded = False
         
-        try:
-            await bot.wait_for('message', timeout=1.0, check=check)
-            embed = discord.Embed(description=f"✅ {user.mention} responded with 'here'", color=0x000000)
+        # Send countdown from amount down to 0
+        for i in range(amount, -1, -1):
+            # Stop if user already responded
+            if responded:
+                break
+                
+            # Send countdown message
+            if i == amount:
+                msg = await channel.send(f"AFK CHECK {user.mention}")
+            elif i > 0:
+                msg = await channel.send(f"{i} {user.mention}")
+            else:
+                msg = await channel.send(f"0 {user.mention}")
+            
+            # Check if user replied during this interval
+            def check(m):
+                return m.author == user and m.content.lower() == "here" and m.channel == channel
+            
+            try:
+                # Wait for user response (only wait the interval time)
+                await bot.wait_for('message', timeout=AFK_COOLDOWN, check=check)
+                responded = True
+                embed = discord.Embed(description=f"✅ {user.mention} responded with 'here'", color=0x000000)
+                await channel.send(embed=embed)
+                break
+            except asyncio.TimeoutError:
+                continue
+        
+        # If loop completes without response
+        if not responded:
+            embed = discord.Embed(description=f"❌ {user.mention} folded", color=0x000000)
             await channel.send(embed=embed)
-            return
-        except asyncio.TimeoutError:
-            continue
     
-    # If loop completes without "here"
-    embed = discord.Embed(description=f"❌ {user.mention} folded", color=0x000000)
-    await channel.send(embed=embed)
+    finally:
+        # Always clear the active check
+        if channel_id in active_afk_checks:
+            del active_afk_checks[channel_id]
 
 # ===== BASIC COMMANDS =====
 @bot.tree.command(name="ping", description="Check bot latency")
@@ -270,7 +301,7 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(name="Basic", value="`/ping` - Check latency\n`/uptime` - Show uptime\n`/help` - This menu", inline=False)
     embed.add_field(name="Admin (Owner Only)", value="`/admin add @user` - Add admin\n`/admin remove @user` - Remove admin\n`/admin list` - List admins", inline=False)
     embed.add_field(name="Auto-React (Owner/Admin)", value="`/react add @user 😈 👍 ❤️` - Add auto-reacts (up to 4)\n`/react remove @user` - Remove auto-reacts\n`/react list` - List auto-reacted users", inline=False)
-    embed.add_field(name="AFK Check", value="`/afk check <amount> <user>` - Countdown AFK check", inline=False)
+    embed.add_field(name="AFK Check", value=f"`/afk check <amount> <user>` - Countdown AFK check (max {AFK_MAX_SECONDS}s)\n• Only one check per channel at a time\n• Respond with `here` to stop", inline=False)
     embed.set_footer(text="Streaming Umar")
     await interaction.response.send_message(embed=embed)
 
