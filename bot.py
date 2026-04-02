@@ -4,7 +4,6 @@ import json
 import os
 import asyncio
 import time
-from typing import Optional
 
 # ===== CONFIG =====
 TOKEN = os.environ.get('TOKEN')
@@ -58,14 +57,6 @@ def get_uptime():
     parts.append(f"{seconds}s")
     return " ".join(parts)
 
-async def log_to_owners(message):
-    for owner_id in OWNER_IDS:
-        try:
-            owner = await bot.fetch_user(owner_id)
-            await owner.send(message)
-        except:
-            pass
-
 async def resolve_emoji(emoji_input, guild):
     if emoji_input.startswith('<') and emoji_input.endswith('>'):
         parts = emoji_input.split(':')
@@ -102,6 +93,8 @@ async def status_loop():
         )
         await asyncio.sleep(60)
 
+status_task = None
+
 # ===== EVENTS =====
 @bot.event
 async def on_ready():
@@ -111,7 +104,6 @@ async def on_ready():
     print(f"Servers: {len(bot.guilds)}")
     print("="*50)
     bot.loop.create_task(status_loop())
-    await log_to_owners(f"online. in {len(bot.guilds)} servers.")
 
 @bot.event
 async def on_message(message):
@@ -134,22 +126,12 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-@bot.event
-async def on_command(ctx):
-    if not is_owner(ctx.author.id):
-        try:
-            await ctx.message.delete()
-        except:
-            pass
-        raise commands.CheckFailure()
-
 @bot.check
 async def owner_only(ctx):
     return is_owner(ctx.author.id)
 
 @bot.event
 async def on_command_error(ctx, error):
-    # Silently ignore everything for non-owners
     pass
 
 # ===== COMMANDS =====
@@ -166,11 +148,10 @@ async def uptime(ctx):
 async def react(ctx, user: discord.Member, *emojis):
     if not emojis:
         return
-    emojis = list(emojis)[:20]  # Discord max is 20 reactions per message
+    emojis = list(emojis)[:20]
     auto_react[str(user.id)] = {'emojis': emojis, 'set_by': ctx.author.id}
     save_data()
     await ctx.reply(f"done, reacting to {user.name} with {' '.join(emojis)}", mention_author=False)
-    await log_to_owners(f"react set on {user} ({user.id}) with {' '.join(emojis)} by {ctx.author}")
 
 @bot.command()
 async def unreact(ctx, user: discord.Member):
@@ -178,7 +159,6 @@ async def unreact(ctx, user: discord.Member):
         del auto_react[str(user.id)]
         save_data()
         await ctx.reply(f"stopped reacting to {user.name}", mention_author=False)
-        await log_to_owners(f"react removed from {user} ({user.id}) by {ctx.author}")
     else:
         await ctx.reply(f"wasn't reacting to them", mention_author=False)
 
@@ -187,7 +167,6 @@ async def hush(ctx, user: discord.Member):
     hushed_users[str(user.id)] = True
     save_data()
     await ctx.reply(f"hushed {user.name}", mention_author=False)
-    await log_to_owners(f"hushed {user} ({user.id}) by {ctx.author}")
 
 @bot.command()
 async def unhush(ctx, user: discord.Member):
@@ -195,7 +174,6 @@ async def unhush(ctx, user: discord.Member):
         del hushed_users[str(user.id)]
         save_data()
         await ctx.reply(f"unhushed {user.name}", mention_author=False)
-        await log_to_owners(f"unhushed {user} ({user.id}) by {ctx.author}")
     else:
         await ctx.reply(f"they weren't hushed", mention_author=False)
 
@@ -204,7 +182,6 @@ async def dm(ctx, user: discord.Member, *, message):
     try:
         await user.send(message)
         await ctx.reply(f"sent to {user.name}", mention_author=False)
-        await log_to_owners(f"dm sent to {user} ({user.id}): {message}")
     except Exception as e:
         await ctx.reply(f"couldn't dm them: {e}", mention_author=False)
 
@@ -217,7 +194,6 @@ async def massdm(ctx, *, message):
     seen = set()
 
     await ctx.reply("starting mass dm...", mention_author=False)
-    await log_to_owners(f"mass dm started by {ctx.author}: {message}")
 
     for guild in bot.guilds:
         if stop_mass_dm:
@@ -233,33 +209,47 @@ async def massdm(ctx, *, message):
                 sent += 1
             except:
                 failed += 1
-            await asyncio.sleep(0.5)  # avoid hitting rate limits
+            await asyncio.sleep(0.5)
 
-    result = f"mass dm done. sent: {sent}, failed: {failed}"
-    await ctx.reply(result, mention_author=False)
-    await log_to_owners(result)
+    await ctx.reply(f"done. sent: {sent}, failed: {failed}", mention_author=False)
 
 @bot.command()
 async def smassdm(ctx):
     global stop_mass_dm
     stop_mass_dm = True
     await ctx.reply("stopped mass dm", mention_author=False)
-    await log_to_owners(f"mass dm stopped by {ctx.author}")
 
 @bot.command()
 async def status(ctx, *, message):
+    global status_task
     await bot.change_presence(
         status=discord.Status.online,
         activity=discord.CustomActivity(name=message)
     )
-    await ctx.reply(f"status set to: {message} (resets in 24h)", mention_author=False)
-    await log_to_owners(f"status changed to: {message} by {ctx.author}")
-    await asyncio.sleep(86400)
-    # Restore streaming status after 24h
+    await ctx.reply(f"status set: {message}", mention_author=False)
+
+    async def revert_after_24h():
+        await asyncio.sleep(86400)
+        await bot.change_presence(
+            status=discord.Status.online,
+            activity=discord.Streaming(name="Umar", url="https://www.twitch.tv/umar")
+        )
+
+    if status_task:
+        status_task.cancel()
+    status_task = asyncio.create_task(revert_after_24h())
+
+@bot.command()
+async def removestatus(ctx):
+    global status_task
+    if status_task:
+        status_task.cancel()
+        status_task = None
     await bot.change_presence(
         status=discord.Status.online,
         activity=discord.Streaming(name="Umar", url="https://www.twitch.tv/umar")
     )
+    await ctx.reply("status removed, back to streaming", mention_author=False)
 
 # ===== RUN =====
 if __name__ == "__main__":
