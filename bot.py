@@ -132,7 +132,7 @@ async def on_ready():
 async def on_member_join(member):
     if str(member.id) in autobanned_users:
         try:
-            await member.ban(reason="autoban (raid protection)", delete_message_days=1)
+            await member.ban(reason="autoban", delete_message_days=1)
         except:
             pass
 
@@ -141,7 +141,7 @@ async def on_member_unban(guild, user):
     if str(user.id) in autobanned_users:
         try:
             await asyncio.sleep(1)
-            await guild.ban(user, reason="autoban active (raid protection)", delete_message_days=0)
+            await guild.ban(user, reason="autoban active", delete_message_days=0)
         except:
             pass
 
