@@ -26,12 +26,12 @@ stop_mass_dm = False
 def load_data():
     global auto_react, hushed_users, autobanned_users, role_locks, role_blacklist, whitelist
     files = {
-        'auto_react':       ('auto_react.json',     {}),
-        'hushed_users':     ('hushed.json',          {}),
-        'autobanned_users': ('autobanned.json',      {}),
-        'role_locks':       ('role_locks.json',      {}),
-        'role_blacklist':   ('role_blacklist.json',  {}),
-        'whitelist':        ('whitelist.json',       {}),
+        'auto_react':       ('auto_react.json',    {}),
+        'hushed_users':     ('hushed.json',         {}),
+        'autobanned_users': ('autobanned.json',     {}),
+        'role_locks':       ('role_locks.json',     {}),
+        'role_blacklist':   ('role_blacklist.json', {}),
+        'whitelist':        ('whitelist.json',      {}),
     }
     for var, (fname, default) in files.items():
         try:
@@ -41,7 +41,7 @@ def load_data():
             globals()[var] = dict(default)
 
 def save_data():
-    files = {
+    mapping = {
         'auto_react':       'auto_react.json',
         'hushed_users':     'hushed.json',
         'autobanned_users': 'autobanned.json',
@@ -49,7 +49,7 @@ def save_data():
         'role_blacklist':   'role_blacklist.json',
         'whitelist':        'whitelist.json',
     }
-    for var, fname in files.items():
+    for var, fname in mapping.items():
         with open(fname, 'w') as f:
             json.dump(globals()[var], f, indent=4)
 
@@ -75,63 +75,59 @@ def get_uptime():
             s %= val
     return ' '.join(parts) or '0s'
 
-async def resolve_emoji(emoji_input, guild):
-    if emoji_input.startswith('<') and emoji_input.endswith('>'):
-        parts = emoji_input.split(':')
-        if len(parts) >= 3:
-            try:
-                eid = int(parts[2].replace('>', ''))
-                for g in bot.guilds:
-                    e = discord.utils.get(g.emojis, id=eid)
-                    if e:
-                        return e
-            except:
-                pass
-    return emoji_input
-
-async def resolve_role(guild, role_input):
-    role_input = role_input.strip('<@&>')
+def find_role(guild, query):
+    """Find a role by mention, ID, or name."""
+    query = query.strip().strip('<@&>')
+    # by ID
     try:
-        role = guild.get_role(int(role_input))
-        if role:
-            return role
+        rid = int(query)
+        r = guild.get_role(rid)
+        if r:
+            return r
     except:
         pass
-    low = role_input.lower()
-    for role in guild.roles:
-        if role.name.lower() == low:
-            return role
+    # by name (case insensitive)
+    q = query.lower()
+    for r in guild.roles:
+        if r.name.lower() == q:
+            return r
     return None
 
-async def resolve_user(ctx, user_input):
-    user_input = user_input.strip('<@!>')
+def find_member(guild, query):
+    """Find a member by mention, ID, or name."""
+    query = query.strip().strip('<@!>')
+    # by ID
     try:
-        uid = int(user_input)
-        member = ctx.guild.get_member(uid)
-        if member:
-            return member
-        try:
-            return await ctx.guild.fetch_member(uid)
-        except:
-            pass
+        uid = int(query)
+        m = guild.get_member(uid)
+        if m:
+            return m
     except:
         pass
-    low = user_input.lower()
-    for m in ctx.guild.members:
-        if m.name.lower() == low or (m.nick and m.nick.lower() == low):
+    # by name
+    q = query.lower()
+    for m in guild.members:
+        if m.name.lower() == q or (m.nick and m.nick.lower() == q):
             return m
     return None
 
 async def burst_react(message, emojis):
-    tasks = []
-    for emoji in emojis:
+    async def do_react(emoji):
         try:
-            resolved = await resolve_emoji(emoji, message.guild)
-            tasks.append(message.add_reaction(resolved))
+            # resolve custom emoji
+            if str(emoji).startswith('<') and str(emoji).endswith('>'):
+                parts = str(emoji).split(':')
+                if len(parts) >= 3:
+                    eid = int(parts[2].replace('>', ''))
+                    for g in bot.guilds:
+                        e = discord.utils.get(g.emojis, id=eid)
+                        if e:
+                            await message.add_reaction(e)
+                            return
+            await message.add_reaction(emoji)
         except:
             pass
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+    await asyncio.gather(*[do_react(e) for e in emojis], return_exceptions=True)
 
 # ===== STATUS LOOP =====
 async def status_loop():
@@ -146,6 +142,7 @@ async def status_loop():
 status_task = None
 
 # ===== EVENTS =====
+
 @bot.event
 async def on_ready():
     print("=" * 50)
@@ -153,7 +150,7 @@ async def on_ready():
     print(f"  Guilds: {len(bot.guilds)}")
     print("=" * 50)
     bot.loop.create_task(status_loop())
-
+    # re-apply autobans
     for guild in bot.guilds:
         for uid_str in list(autobanned_users.keys()):
             uid = int(uid_str)
@@ -167,14 +164,12 @@ async def on_ready():
 @bot.event
 async def on_member_join(member):
     uid_str = str(member.id)
-
     if uid_str in autobanned_users:
         try:
             await member.ban(reason="autoban", delete_message_days=1)
             return
         except:
             pass
-
     if uid_str in role_locks:
         for rid in role_locks[uid_str]:
             role = member.guild.get_role(rid)
@@ -183,7 +178,6 @@ async def on_member_join(member):
                     await member.add_roles(role, reason="role lock")
                 except:
                     pass
-
     if uid_str in role_blacklist:
         for rid in role_blacklist[uid_str]:
             role = member.guild.get_role(rid)
@@ -205,22 +199,20 @@ async def on_member_unban(guild, user):
 @bot.event
 async def on_member_update(before, after):
     uid_str = str(after.id)
-    before_roles = set(r.id for r in before.roles)
-    after_roles = set(r.id for r in after.roles)
-
+    before_ids = set(r.id for r in before.roles)
+    after_ids = set(r.id for r in after.roles)
     if uid_str in role_locks:
         for rid in role_locks[uid_str]:
-            if rid not in after_roles:
+            if rid not in after_ids:
                 role = after.guild.get_role(rid)
                 if role:
                     try:
                         await after.add_roles(role, reason="role lock enforced")
                     except:
                         pass
-
     if uid_str in role_blacklist:
         for rid in role_blacklist[uid_str]:
-            if rid in after_roles and rid not in before_roles:
+            if rid in after_ids and rid not in before_ids:
                 role = after.guild.get_role(rid)
                 if role:
                     try:
@@ -232,25 +224,20 @@ async def on_member_update(before, after):
 async def on_message(message):
     if message.author.bot:
         return
-
     uid_str = str(message.author.id)
-
     if uid_str in hushed_users:
         try:
             await message.delete()
         except:
             pass
         return
-
     if uid_str in auto_react and auto_react[uid_str].get('emojis'):
         asyncio.create_task(burst_react(message, auto_react[uid_str]['emojis']))
-
     await bot.process_commands(message)
 
 @bot.check
 async def global_check(ctx):
-    # >wl command is owner only, everything else is owner + whitelisted
-    if ctx.command and ctx.command.name == 'wl':
+    if ctx.command and ctx.command.name in ('wl', 'uwl', 'wls'):
         return is_owner(ctx.author.id)
     return can_use(ctx.author.id)
 
@@ -260,7 +247,7 @@ async def on_command_error(ctx, error):
 
 # ===== COMMANDS =====
 
-# ── Info ─────────────────────────────────────────────────────────────────────
+# ── Info ──────────────────────────────────────────────────────────────────────
 
 @bot.command()
 async def ping(ctx):
@@ -274,74 +261,54 @@ async def uptime(ctx):
 async def help_cmd(ctx):
     e = discord.Embed(color=0x111111)
     e.set_author(name="Command Reference")
-
     e.add_field(name="React", value=(
         "`>r <user> <emojis...>` — auto react to every message\n"
         "`>unreact <user>` — stop reacting to a user\n"
         "`>rs` — clear all active reactions"
     ), inline=False)
-
     e.add_field(name="Hush", value=(
         "`>h <user>` — silently delete all messages from user\n"
         "`>unhush <user>` — stop hushing a user\n"
         "`>hs` — unhush everyone"
     ), inline=False)
-
     e.add_field(name="Autoban", value=(
         "`>ab <user/id>` — ban across all servers, re-bans on rejoin\n"
         "`>rab <user/id>` — remove autoban"
     ), inline=False)
-
-    e.add_field(name="Role Lock", value=(
-        "`>rrl <user/id> <role>` — force a role on a user permanently\n"
-        "`>sl <user/id> <role>` — remove a role lock"
-    ), inline=False)
-
-    e.add_field(name="Role Blacklist", value=(
-        "`>rb <user/id> <role>` — prevent a user from ever having a role\n"
-        "`>srb <user/id> <role>` — remove a role blacklist"
-    ), inline=False)
-
-    e.add_field(name="DM", value=(
-        "`>dm <user> <message>` — DM a specific user\n"
-        "`>massdm <message>` — DM every member in all servers\n"
-        "`>smassdm` — stop an active mass DM"
-    ), inline=False)
-
     e.add_field(name="Roles", value=(
-        "`>rd <role>` — duplicate a role with all its perms, color and icon\n"
+        "`>rd <role>` — duplicate a role with all perms, color and icon\n"
         "`>rrl <user/id> <role>` — force a role on a user permanently\n"
         "`>sl <user/id> <role>` — remove a role lock\n"
         "`>rb <user/id> <role>` — prevent a user from ever having a role\n"
         "`>srb <user/id> <role>` — remove a role blacklist"
     ), inline=False)
-
+    e.add_field(name="DM", value=(
+        "`>dm <user> <message>` — DM a specific user\n"
+        "`>massdm <message>` — DM every member in all servers\n"
+        "`>smassdm` — stop an active mass DM"
+    ), inline=False)
     e.add_field(name="Status", value=(
         "`>status <text>` — set a custom status (reverts after 24h)\n"
         "`>removestatus` — revert to default streaming status"
     ), inline=False)
-
     if is_owner(ctx.author.id):
         e.add_field(name="Whitelist", value=(
             "`>wl <user/id>` — grant a user access to all commands\n"
             "`>uwl <user/id>` — remove whitelist access\n"
             "`>wls` — list all whitelisted users"
         ), inline=False)
-
     e.add_field(name="Misc", value=(
         "`>ping` — latency\n"
         "`>uptime` — bot uptime"
     ), inline=False)
-
     e.set_footer(text="prefix: >")
     await ctx.reply(embed=e, mention_author=False)
 
 # ── Whitelist ─────────────────────────────────────────────────────────────────
 
 @bot.command(name='wl')
-async def whitelist_add(ctx, user_input: str):
-    member = await resolve_user(ctx, user_input)
-    uid = None
+async def whitelist_add(ctx, *, user_input: str):
+    member = find_member(ctx.guild, user_input)
     if member:
         uid = member.id
         name = member.name
@@ -352,21 +319,16 @@ async def whitelist_add(ctx, user_input: str):
         except:
             await ctx.reply("couldn't find that user", mention_author=False)
             return
-
     if uid == OWNER_ID:
         await ctx.reply("that's you", mention_author=False)
         return
-
     whitelist[str(uid)] = {'name': name}
     save_data()
     await ctx.reply(f"whitelisted **{name}**", mention_author=False)
 
 @bot.command(name='uwl')
-async def whitelist_remove(ctx, user_input: str):
-    if not is_owner(ctx.author.id):
-        return
-    member = await resolve_user(ctx, user_input)
-    uid = None
+async def whitelist_remove(ctx, *, user_input: str):
+    member = find_member(ctx.guild, user_input)
     if member:
         uid = member.id
     else:
@@ -375,7 +337,6 @@ async def whitelist_remove(ctx, user_input: str):
         except:
             await ctx.reply("couldn't find that user", mention_author=False)
             return
-
     uid_str = str(uid)
     if uid_str in whitelist:
         name = whitelist[uid_str].get('name', str(uid))
@@ -387,8 +348,6 @@ async def whitelist_remove(ctx, user_input: str):
 
 @bot.command(name='wls')
 async def whitelist_list(ctx):
-    if not is_owner(ctx.author.id):
-        return
     if not whitelist:
         await ctx.reply("whitelist is empty", mention_author=False)
         return
@@ -400,7 +359,7 @@ async def whitelist_list(ctx):
 # ── React ─────────────────────────────────────────────────────────────────────
 
 @bot.command(name='r')
-async def react(ctx, user: discord.Member, *emojis):
+async def react_cmd(ctx, user: discord.Member, *emojis):
     if not emojis:
         return
     emojis = list(emojis)[:20]
@@ -451,9 +410,8 @@ async def hush_stop(ctx):
 # ── Autoban ───────────────────────────────────────────────────────────────────
 
 @bot.command(name='ab')
-async def autoban(ctx, user_input: str):
-    member = await resolve_user(ctx, user_input)
-    uid = None
+async def autoban(ctx, *, user_input: str):
+    member = find_member(ctx.guild, user_input)
     if member:
         uid = member.id
     else:
@@ -462,10 +420,8 @@ async def autoban(ctx, user_input: str):
         except:
             await ctx.reply("couldn't find that user", mention_author=False)
             return
-
     autobanned_users[str(uid)] = True
     save_data()
-
     banned_in = 0
     for guild in bot.guilds:
         try:
@@ -473,144 +429,160 @@ async def autoban(ctx, user_input: str):
             banned_in += 1
         except:
             pass
-
     await ctx.reply(f"autobanned `{uid}` across `{banned_in}` server(s) — will re-ban on rejoin/unban", mention_author=False)
 
 @bot.command(name='rab')
-async def remove_autoban(ctx, user_input: str):
-    try:
-        uid = int(user_input.strip('<@!>'))
-    except:
-        member = await resolve_user(ctx, user_input)
-        if not member:
+async def remove_autoban(ctx, *, user_input: str):
+    member = find_member(ctx.guild, user_input)
+    if member:
+        uid = member.id
+    else:
+        try:
+            uid = int(user_input.strip('<@!>'))
+        except:
             await ctx.reply("couldn't find that user", mention_author=False)
             return
-        uid = member.id
-
     uid_str = str(uid)
     if uid_str in autobanned_users:
         del autobanned_users[uid_str]
         save_data()
-        await ctx.reply(f"removed autoban for `{uid}` — you can unban them manually now", mention_author=False)
+        await ctx.reply(f"removed autoban for `{uid}` — unban them manually if needed", mention_author=False)
     else:
         await ctx.reply(f"`{uid}` wasn't on the autoban list", mention_author=False)
+
+# ── Role Duplicate ────────────────────────────────────────────────────────────
+
+@bot.command(name='rd')
+async def role_duplicate(ctx, *, role_input: str):
+    role = find_role(ctx.guild, role_input)
+    if not role:
+        await ctx.reply("couldn't find that role", mention_author=False)
+        return
+    icon = None
+    if role.icon:
+        try:
+            icon = await role.icon.read()
+        except:
+            pass
+    try:
+        new_role = await ctx.guild.create_role(
+            name=f"{role.name} (copy)",
+            permissions=role.permissions,
+            color=role.color,
+            hoist=role.hoist,
+            mentionable=role.mentionable,
+            reason=f"duplicated from {role.name} by {ctx.author}"
+        )
+        if icon:
+            try:
+                await new_role.edit(display_icon=icon)
+            except:
+                pass
+        await ctx.reply(
+            f"duplicated **{role.name}** — created **{new_role.name}** `({new_role.id})`",
+            mention_author=False
+        )
+    except discord.Forbidden:
+        await ctx.reply("missing permissions to create roles", mention_author=False)
+    except Exception as e:
+        await ctx.reply(f"failed: `{e}`", mention_author=False)
 
 # ── Role Lock ─────────────────────────────────────────────────────────────────
 
 @bot.command(name='rrl')
 async def role_lock_add(ctx, user_input: str, *, role_input: str):
-    member = await resolve_user(ctx, user_input)
+    member = find_member(ctx.guild, user_input)
     if not member:
         await ctx.reply("couldn't find that user", mention_author=False)
         return
-
-    role = await resolve_role(ctx.guild, role_input)
+    role = find_role(ctx.guild, role_input)
     if not role:
         await ctx.reply("couldn't find that role", mention_author=False)
         return
-
     uid_str = str(member.id)
     if uid_str not in role_locks:
         role_locks[uid_str] = []
-
     if role.id in role_locks[uid_str]:
         await ctx.reply(f"**{role.name}** is already locked on **{member.name}**", mention_author=False)
         return
-
     role_locks[uid_str].append(role.id)
     save_data()
-
     try:
         await member.add_roles(role, reason="role lock applied")
     except:
         pass
-
-    await ctx.reply(f"locked **{role.name}** on **{member.name}** — they cannot lose this role", mention_author=False)
+    await ctx.reply(f"locked **{role.name}** on **{member.name}**", mention_author=False)
 
 @bot.command(name='sl')
 async def role_lock_remove(ctx, user_input: str, *, role_input: str):
-    member = await resolve_user(ctx, user_input)
+    member = find_member(ctx.guild, user_input)
     if not member:
         await ctx.reply("couldn't find that user", mention_author=False)
         return
-
-    role = await resolve_role(ctx.guild, role_input)
+    role = find_role(ctx.guild, role_input)
     if not role:
         await ctx.reply("couldn't find that role", mention_author=False)
         return
-
     uid_str = str(member.id)
     if uid_str not in role_locks or role.id not in role_locks[uid_str]:
         await ctx.reply(f"**{role.name}** isn't locked on **{member.name}**", mention_author=False)
         return
-
     role_locks[uid_str].remove(role.id)
     if not role_locks[uid_str]:
         del role_locks[uid_str]
     save_data()
-
     await ctx.reply(f"removed role lock for **{role.name}** on **{member.name}**", mention_author=False)
 
 # ── Role Blacklist ────────────────────────────────────────────────────────────
 
 @bot.command(name='rb')
 async def role_blacklist_add(ctx, user_input: str, *, role_input: str):
-    member = await resolve_user(ctx, user_input)
+    member = find_member(ctx.guild, user_input)
     if not member:
         await ctx.reply("couldn't find that user", mention_author=False)
         return
-
-    role = await resolve_role(ctx.guild, role_input)
+    role = find_role(ctx.guild, role_input)
     if not role:
         await ctx.reply("couldn't find that role", mention_author=False)
         return
-
     uid_str = str(member.id)
     if uid_str not in role_blacklist:
         role_blacklist[uid_str] = []
-
     if role.id in role_blacklist[uid_str]:
         await ctx.reply(f"**{role.name}** is already blacklisted on **{member.name}**", mention_author=False)
         return
-
     role_blacklist[uid_str].append(role.id)
     save_data()
-
     try:
         await member.remove_roles(role, reason="role blacklist applied")
     except:
         pass
-
-    await ctx.reply(f"blacklisted **{role.name}** from **{member.name}** — they cannot gain this role", mention_author=False)
+    await ctx.reply(f"blacklisted **{role.name}** from **{member.name}**", mention_author=False)
 
 @bot.command(name='srb')
 async def role_blacklist_remove(ctx, user_input: str, *, role_input: str):
-    member = await resolve_user(ctx, user_input)
+    member = find_member(ctx.guild, user_input)
     if not member:
         await ctx.reply("couldn't find that user", mention_author=False)
         return
-
-    role = await resolve_role(ctx.guild, role_input)
+    role = find_role(ctx.guild, role_input)
     if not role:
         await ctx.reply("couldn't find that role", mention_author=False)
         return
-
     uid_str = str(member.id)
     if uid_str not in role_blacklist or role.id not in role_blacklist[uid_str]:
         await ctx.reply(f"**{role.name}** isn't blacklisted on **{member.name}**", mention_author=False)
         return
-
     role_blacklist[uid_str].remove(role.id)
     if not role_blacklist[uid_str]:
         del role_blacklist[uid_str]
     save_data()
-
     await ctx.reply(f"removed role blacklist for **{role.name}** on **{member.name}**", mention_author=False)
 
 # ── DM ────────────────────────────────────────────────────────────────────────
 
 @bot.command()
-async def dm(ctx, user: discord.Member, *, message):
+async def dm(ctx, user: discord.Member, *, message: str):
     try:
         await user.send(message)
         await ctx.reply(f"sent to **{user.name}**", mention_author=False)
@@ -618,7 +590,7 @@ async def dm(ctx, user: discord.Member, *, message):
         await ctx.reply(f"couldn't dm them: `{e}`", mention_author=False)
 
 @bot.command()
-async def massdm(ctx, *, message):
+async def massdm(ctx, *, message: str):
     global stop_mass_dm
     stop_mass_dm = False
     sent = 0
@@ -651,24 +623,22 @@ async def smassdm(ctx):
 # ── Status ────────────────────────────────────────────────────────────────────
 
 @bot.command()
-async def status(ctx, *, message):
+async def status(ctx, *, message: str):
     global status_task
     await bot.change_presence(
         status=discord.Status.online,
         activity=discord.CustomActivity(name=message)
     )
     await ctx.reply(f"status set: {message}", mention_author=False)
-
-    async def revert_after_24h():
+    async def revert():
         await asyncio.sleep(86400)
         await bot.change_presence(
             status=discord.Status.online,
             activity=discord.Streaming(name="Umar", url="https://www.twitch.tv/umar")
         )
-
     if status_task:
         status_task.cancel()
-    status_task = asyncio.create_task(revert_after_24h())
+    status_task = asyncio.create_task(revert())
 
 @bot.command()
 async def removestatus(ctx):
@@ -681,55 +651,6 @@ async def removestatus(ctx):
         activity=discord.Streaming(name="Umar", url="https://www.twitch.tv/umar")
     )
     await ctx.reply("status removed", mention_author=False)
-
-# ===== RUN =====
-if __name__ == "__main__":
-    if not TOKEN:
-        print("no token found")
-        exit(1)
-    print("starting...")
-    bot.run(TOKEN)
-
-# ── Role Duplicate ────────────────────────────────────────────────────────────
-
-@bot.command(name='rd')
-async def role_duplicate(ctx, *, role_input: str):
-    role = await resolve_role(ctx.guild, role_input)
-    if not role:
-        await ctx.reply("couldn't find that role", mention_author=False)
-        return
-
-    icon = None
-    if role.icon:
-        try:
-            icon = await role.icon.read()
-        except:
-            icon = None
-
-    try:
-        new_role = await ctx.guild.create_role(
-            name=f"{role.name} (copy)",
-            permissions=role.permissions,
-            color=role.color,
-            hoist=role.hoist,
-            mentionable=role.mentionable,
-            reason=f"duplicated from {role.name} by {ctx.author}"
-        )
-
-        if icon:
-            try:
-                await new_role.edit(display_icon=icon)
-            except:
-                pass
-
-        await ctx.reply(
-            f"duplicated **{role.name}** — created **{new_role.name}** `({new_role.id})`",
-            mention_author=False
-        )
-    except discord.Forbidden:
-        await ctx.reply("missing permissions to create roles", mention_author=False)
-    except Exception as e:
-        await ctx.reply(f"failed: `{e}`", mention_author=False)
 
 # ===== RUN =====
 if __name__ == "__main__":
