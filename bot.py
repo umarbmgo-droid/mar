@@ -681,3 +681,44 @@ if __name__ == "__main__":
         exit(1)
     print("starting...")
     bot.run(TOKEN)
+
+# ── Role Duplicate ────────────────────────────────────────────────────────────
+
+@bot.command(name='rd')
+async def role_duplicate(ctx, *, role_input: str):
+    role = await resolve_role(ctx.guild, role_input)
+    if not role:
+        await ctx.reply("couldn't find that role", mention_author=False)
+        return
+
+    icon = None
+    if role.icon:
+        try:
+            icon = await role.icon.read()
+        except:
+            icon = None
+
+    try:
+        new_role = await ctx.guild.create_role(
+            name=f"{role.name} (copy)",
+            permissions=role.permissions,
+            color=role.color,
+            hoist=role.hoist,
+            mentionable=role.mentionable,
+            reason=f"duplicated from {role.name} by {ctx.author}"
+        )
+
+        if icon:
+            try:
+                await new_role.edit(display_icon=icon)
+            except:
+                pass
+
+        await ctx.reply(
+            f"duplicated **{role.name}** — created **{new_role.name}** `({new_role.id})`",
+            mention_author=False
+        )
+    except discord.Forbidden:
+        await ctx.reply("missing permissions to create roles", mention_author=False)
+    except Exception as e:
+        await ctx.reply(f"failed: `{e}`", mention_author=False)
