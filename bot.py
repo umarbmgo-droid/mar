@@ -308,6 +308,14 @@ async def help_cmd(ctx):
         "`>smassdm` — stop an active mass DM"
     ), inline=False)
 
+    e.add_field(name="Roles", value=(
+        "`>rd <role>` — duplicate a role with all its perms, color and icon\n"
+        "`>rrl <user/id> <role>` — force a role on a user permanently\n"
+        "`>sl <user/id> <role>` — remove a role lock\n"
+        "`>rb <user/id> <role>` — prevent a user from ever having a role\n"
+        "`>srb <user/id> <role>` — remove a role blacklist"
+    ), inline=False)
+
     e.add_field(name="Status", value=(
         "`>status <text>` — set a custom status (reverts after 24h)\n"
         "`>removestatus` — revert to default streaming status"
@@ -722,3 +730,11 @@ async def role_duplicate(ctx, *, role_input: str):
         await ctx.reply("missing permissions to create roles", mention_author=False)
     except Exception as e:
         await ctx.reply(f"failed: `{e}`", mention_author=False)
+
+# ===== RUN =====
+if __name__ == "__main__":
+    if not TOKEN:
+        print("no token found")
+        exit(1)
+    print("starting...")
+    bot.run(TOKEN)
